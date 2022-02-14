@@ -1,0 +1,3 @@
+# namespaced-db-k8s-operator
+
+More description coming soon...
