@@ -1,0 +1,9 @@
+apiVersion: db.tarkalabs.com/v1alpha1
+kind: NamespacedDBCreds
+metadata:
+  name: local-db
+spec:
+  dbHost: 192.168.0.134
+  dbPort: 3306
+  dbAdminUserName: root
+  dbAdminPassword: password

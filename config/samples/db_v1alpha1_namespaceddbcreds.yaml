@@ -1,7 +1,0 @@
-apiVersion: db.tarkalabs.com/v1alpha1
-kind: NamespacedDBCreds
-metadata:
-  name: namespaceddbcreds-sample
-spec:
-  # Add fields here
-  foo: bar
