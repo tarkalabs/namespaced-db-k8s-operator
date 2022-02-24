@@ -1,0 +1,17 @@
+
+Go Kubernetes Operator:
+
+operator-sdk init --domain=tarkalabs.com --repo=github.com/tarkalabs/namespaced-db-k8s-operator
+
+operator-sdk create api --group=db --version=v1alpha1 --kind=NamespacedDBCreds --resource=true --controller=true
+
+# Should run for the first time after docker-build
+make install
+
+make docker-build IMG=namespaced-db-k8s-operator:v5
+
+make deploy IMG=namespaced-db-k8s-operator:v5
+
+make docker-build deploy IMG=namespaced-db-k8s-operator:v5
+
+kubectl get secrets -o yaml
