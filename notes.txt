@@ -1,17 +1,25 @@
 
 Go Kubernetes Operator:
 
+# Initializing the operator
 operator-sdk init --domain=tarkalabs.com --repo=github.com/tarkalabs/namespaced-db-k8s-operator
 
+# Creating the api
 operator-sdk create api --group=db --version=v1alpha1 --kind=NamespacedDBCreds --resource=true --controller=true
 
 # Should run for the first time after docker-build
 make install
 
+# build the operator
 make docker-build IMG=namespaced-db-k8s-operator:v5
 
+# deploy the operator
 make deploy IMG=namespaced-db-k8s-operator:v5
 
+# Build and deploy the operator
 make docker-build deploy IMG=namespaced-db-k8s-operator:v5
+
+# To get crd installed on cluster
+kubectl get namespaceddbcreds -o yaml
 
 kubectl get secrets -o yaml
