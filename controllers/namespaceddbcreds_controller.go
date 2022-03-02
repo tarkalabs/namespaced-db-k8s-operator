@@ -18,11 +18,15 @@ package controllers
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
+	"math/rand"
 	"time"
 
+	_ "github.com/go-sql-driver/mysql"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
+
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -32,6 +36,8 @@ import (
 
 	dbv1alpha1 "github.com/tarkalabs/namespaced-db-k8s-operator/api/v1alpha1"
 )
+
+const PASSWORD_CHARS = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
 // NamespacedDBCredsReconciler reconciles a NamespacedDBCreds object
 type NamespacedDBCredsReconciler struct {
@@ -55,7 +61,9 @@ type NamespacedDBCredsReconciler struct {
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.9.2/pkg/reconcile
 func (r *NamespacedDBCredsReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := log.FromContext(ctx).WithValues("namespaceddbcreds", req.NamespacedName)
+	log := log.FromContext(ctx)
+
+	log.Info(fmt.Sprintf("Reconciling now (%v)", time.Now().Unix()))
 
 	// Fetch the NamespacedDBCreds instance
 	instance := &dbv1alpha1.NamespacedDBCreds{}
@@ -66,6 +74,13 @@ func (r *NamespacedDBCredsReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{RequeueAfter: time.Minute}, client.IgnoreNotFound(err)
 	}
 
+	db, err := sql.Open("mysql", getDataSourceName(instance))
+	if err != nil {
+		log.Error(err, "Unable to connect to database of "+instance.Name)
+		return ctrl.Result{RequeueAfter: time.Minute}, err
+	}
+	defer db.Close()
+
 	// Fetch the Namespaces
 	namespaces := &corev1.NamespaceList{}
 	err = r.List(ctx, namespaces)
@@ -75,12 +90,21 @@ func (r *NamespacedDBCredsReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	} else {
 		// Create db secret for each Namespace
 		for _, namespace := range namespaces.Items {
-			exisingSecret := &corev1.Secret{}
+			existingSecret := &corev1.Secret{}
 
-			err = r.Get(ctx, client.ObjectKey{Name: instance.Name, Namespace: namespace.Name}, exisingSecret)
+			err = r.Get(ctx, client.ObjectKey{Name: instance.Name, Namespace: namespace.Name}, existingSecret)
 
 			if err != nil && errors.IsNotFound(err) {
-				secret := generateSecret(instance, &namespace, nil)
+
+				ctx, cancelfunc := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancelfunc()
+
+				db_password := generateNewPassword(16)
+				if !createDatabase(ctx, db, namespace.Name, db_password) {
+					return ctrl.Result{RequeueAfter: time.Minute}, err
+				}
+
+				secret := generateSecret(instance, &namespace, nil, db_password)
 				err = r.Create(ctx, &secret)
 				if err != nil {
 					log.Error(err, "unable to create Secret in Namespace: "+namespace.Name)
@@ -92,13 +116,14 @@ func (r *NamespacedDBCredsReconciler) Reconcile(ctx context.Context, req ctrl.Re
 				log.Error(err, "unable to fetch Namespace secret: "+namespace.Name)
 				return ctrl.Result{RequeueAfter: time.Minute}, err
 			} else {
-				secret := generateSecret(instance, &namespace, exisingSecret)
+				secret := generateSecret(instance, &namespace, existingSecret, "")
 				err = r.Update(ctx, &secret)
 				if err != nil {
 					log.Error(err, "unable to update Secret in Namespace: "+namespace.Name)
 					return ctrl.Result{RequeueAfter: time.Minute}, err
 				} else {
-					log.Info("Secret updated in Namespace: " + namespace.Name)
+					// Print when real update happens
+					// log.Info("Secret updated in Namespace: " + namespace.Name)
 				}
 			}
 		}
@@ -107,23 +132,81 @@ func (r *NamespacedDBCredsReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	return ctrl.Result{RequeueAfter: time.Minute}, nil
 }
 
-func generateSecret(instance *dbv1alpha1.NamespacedDBCreds, namespace *corev1.Namespace, secret *corev1.Secret) corev1.Secret {
+func generateSecret(instance *dbv1alpha1.NamespacedDBCreds, namespace *corev1.Namespace, existingSecret *corev1.Secret, passsword string) corev1.Secret {
 	metadata := metav1.ObjectMeta{
 		Name:      instance.Name,
 		Namespace: namespace.Name,
 	}
-	if secret != nil {
-		metadata = secret.ObjectMeta
+	if existingSecret != nil {
+		metadata = existingSecret.ObjectMeta
+		passsword = string(existingSecret.Data["password"])
 	}
 	return corev1.Secret{
 		ObjectMeta: metadata,
 		Data: map[string][]byte{
 			"host":     []byte(instance.Spec.DBHost),
 			"port":     []byte(fmt.Sprintf("%v", instance.Spec.DBPort)),
-			"username": []byte(instance.Spec.DBAdminUserName),
-			"password": []byte(instance.Spec.DBAdminPassword),
+			"username": []byte(namespace.Name),
+			"password": []byte(passsword),
 		},
 	}
+}
+
+func createDatabase(ctx context.Context, db *sql.DB, nsName string, password string) bool {
+	log := log.FromContext(ctx)
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		log.Error(err, "Unable to create database: "+nsName)
+		return false
+	}
+
+	_, err = tx.ExecContext(ctx, "CREATE DATABASE IF NOT EXISTS "+nsName)
+	if err != nil {
+		log.Error(err, "Unable to create database: "+nsName)
+		tx.Rollback()
+	}
+
+	_, err = tx.ExecContext(ctx, fmt.Sprintf("CREATE USER `%s`@`%%` IDENTIFIED BY '%s'", nsName, password))
+	if err != nil {
+		log.Error(err, "Unable to create user: "+nsName)
+		tx.Rollback()
+		return false
+	}
+
+	_, err = tx.ExecContext(ctx, fmt.Sprintf("GRANT ALL PRIVILEGES ON %[1]s.* TO '%[1]s'@'%%'", nsName))
+	if err != nil {
+		log.Error(err, "Unable to grant privileges for user to database: "+nsName)
+		tx.Rollback()
+		return false
+	}
+
+	_, err = tx.ExecContext(ctx, "FLUSH PRIVILEGES")
+	if err != nil {
+		log.Error(err, "Unable to flush privileges")
+		tx.Rollback()
+		return false
+	}
+
+	err = tx.Commit()
+	if err != nil {
+		log.Error(err, "Unable to commit transaction")
+		return false
+	} else {
+		log.Info("Schema & user configured for namespace: " + nsName)
+		return true
+	}
+}
+
+func getDataSourceName(instance *dbv1alpha1.NamespacedDBCreds) string {
+	return fmt.Sprintf("%s:%s@tcp(%s:%v)/?multiStatements=true", instance.Spec.DBAdminUserName, instance.Spec.DBAdminPassword, instance.Spec.DBHost, instance.Spec.DBPort)
+}
+
+func generateNewPassword(size int) string {
+	buf := make([]byte, size)
+	for i := 0; i < size; i++ {
+		buf[i] = PASSWORD_CHARS[rand.Intn(len(PASSWORD_CHARS))]
+	}
+	return string(buf)
 }
 
 // SetupWithManager sets up the controller with the Manager.

@@ -1,4 +1,3 @@
-
 Go Kubernetes Operator:
 
 # Initializing the operator
@@ -17,7 +16,7 @@ make docker-build IMG=namespaced-db-k8s-operator:v5
 make deploy IMG=namespaced-db-k8s-operator:v5
 
 # Build and deploy the operator
-make docker-build deploy IMG=namespaced-db-k8s-operator:v5
+make docker-build deploy IMG=namespaced-db-k8s-operator:$(date +"%s")
 
 # To get crd installed on cluster
 kubectl get namespaceddbcreds -o yaml
