@@ -21,6 +21,7 @@ import (
 	"database/sql"
 	"fmt"
 	"math/rand"
+	"strconv"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -63,15 +64,15 @@ type NamespacedDBCredsReconciler struct {
 func (r *NamespacedDBCredsReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := log.FromContext(ctx)
 
-	log.Info(fmt.Sprintf("Reconciling now (%v)", time.Now().Unix()))
+	log.Info(fmt.Sprintf("Reconciling now at %s", time.Now().Format("2006-01-02 15:04:05")))
 
 	// Fetch the NamespacedDBCreds instance
 	instance := &dbv1alpha1.NamespacedDBCreds{}
 	err := r.Get(ctx, req.NamespacedName, instance)
 
 	if err != nil {
-		log.Error(err, "unable to fetch NamespacedDBCreds "+instance.Name)
-		return ctrl.Result{RequeueAfter: time.Minute}, client.IgnoreNotFound(err)
+		log.Error(err, "Unable to fetch NamespacedDBCreds "+instance.Name)
+		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
 	db, err := sql.Open("mysql", getDataSourceName(instance))
@@ -85,7 +86,7 @@ func (r *NamespacedDBCredsReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	namespaces := &corev1.NamespaceList{}
 	err = r.List(ctx, namespaces)
 	if err != nil {
-		log.Error(err, "unable to fetch Namespaces")
+		log.Error(err, "Unable to fetch Namespaces")
 		return ctrl.Result{RequeueAfter: time.Minute}, err
 	} else {
 		// Create db secret for each Namespace
@@ -95,35 +96,49 @@ func (r *NamespacedDBCredsReconciler) Reconcile(ctx context.Context, req ctrl.Re
 			err = r.Get(ctx, client.ObjectKey{Name: instance.Name, Namespace: namespace.Name}, existingSecret)
 
 			if err != nil && errors.IsNotFound(err) {
-
-				ctx, cancelfunc := context.WithTimeout(context.Background(), 10*time.Second)
-				defer cancelfunc()
-
-				db_password := generateNewPassword(16)
-				if !createDatabase(ctx, db, namespace.Name, db_password) {
+				dbPassword := generateNewPassword(16)
+				if !createDatabase(db, namespace.Name, dbPassword) {
 					return ctrl.Result{RequeueAfter: time.Minute}, err
 				}
 
-				secret := generateSecret(instance, &namespace, nil, db_password)
+				secret := getSecret(instance, &namespace, nil, dbPassword)
 				err = r.Create(ctx, &secret)
 				if err != nil {
-					log.Error(err, "unable to create Secret in Namespace: "+namespace.Name)
+					log.Error(err, "Unable to create Secret in Namespace: "+namespace.Name)
 					return ctrl.Result{RequeueAfter: time.Minute}, err
 				} else {
 					log.Info("Secret created in Namespace: " + namespace.Name)
 				}
 			} else if err != nil {
-				log.Error(err, "unable to fetch Namespace secret: "+namespace.Name)
+				log.Error(err, "Unable to fetch Namespace secret: "+namespace.Name)
 				return ctrl.Result{RequeueAfter: time.Minute}, err
 			} else {
-				secret := generateSecret(instance, &namespace, existingSecret, "")
-				err = r.Update(ctx, &secret)
-				if err != nil {
-					log.Error(err, "unable to update Secret in Namespace: "+namespace.Name)
-					return ctrl.Result{RequeueAfter: time.Minute}, err
+				dbPort, _ := strconv.Atoi(string(existingSecret.Data["dbPort"]))
+				if (instance.Spec.DBHost != string(existingSecret.Data["dbHost"])) || (instance.Spec.DBPort != dbPort) {
+					secret := getSecret(instance, &namespace, existingSecret, "")
+
+					if !createDatabase(db, namespace.Name, generateNewPassword(16)) {
+						log.Error(err, "Unable to create database for Namespace: "+namespace.Name)
+						return ctrl.Result{RequeueAfter: time.Minute}, err
+					}
+
+					err = r.Update(ctx, &secret)
+					if err != nil {
+						log.Error(err, "Unable to update Secret in Namespace: "+namespace.Name)
+						return ctrl.Result{RequeueAfter: time.Minute}, err
+					} else {
+						log.Info("Secret updated in Namespace: " + namespace.Name)
+					}
 				} else {
-					// Print when real update happens
-					// log.Info("Secret updated in Namespace: " + namespace.Name)
+					if !checkDatabaseAndUser(db, namespace.Name) {
+						log.Error(err, "Database or User got deleted for Namespace: "+namespace.Name)
+						if !createDatabase(db, namespace.Name, string(existingSecret.Data["password"])) {
+							log.Error(err, "Unable to create database for Namespace: "+namespace.Name)
+							return ctrl.Result{RequeueAfter: time.Minute}, err
+						} else {
+							log.Info("Database & User are created for Namespace: " + namespace.Name)
+						}
+					}
 				}
 			}
 		}
@@ -132,12 +147,12 @@ func (r *NamespacedDBCredsReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	return ctrl.Result{RequeueAfter: time.Minute}, nil
 }
 
-func generateSecret(instance *dbv1alpha1.NamespacedDBCreds, namespace *corev1.Namespace, existingSecret *corev1.Secret, passsword string) corev1.Secret {
+func getSecret(instance *dbv1alpha1.NamespacedDBCreds, namespace *corev1.Namespace, existingSecret *corev1.Secret, passsword string) corev1.Secret {
 	metadata := metav1.ObjectMeta{
 		Name:      instance.Name,
 		Namespace: namespace.Name,
 	}
-	if existingSecret != nil {
+	if existingSecret != nil && passsword == "" {
 		metadata = existingSecret.ObjectMeta
 		passsword = string(existingSecret.Data["password"])
 	}
@@ -152,18 +167,35 @@ func generateSecret(instance *dbv1alpha1.NamespacedDBCreds, namespace *corev1.Na
 	}
 }
 
-func createDatabase(ctx context.Context, db *sql.DB, nsName string, password string) bool {
+func checkDatabaseAndUser(db *sql.DB, namespace string) bool {
+	err := db.QueryRow("SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME = ?", namespace).Scan(&namespace)
+	if err != nil {
+		return false
+	}
+	err = db.QueryRow("SELECT USER FROM mysql.user WHERE USER = ?", namespace).Scan(&namespace)
+	return err == nil
+}
+
+func createDatabase(db *sql.DB, nsName string, password string) bool {
+	ctx, cancelfunc := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelfunc()
+
 	log := log.FromContext(ctx)
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
-		log.Error(err, "Unable to create database: "+nsName)
+		log.Error(err, "Unable to begin db transaction")
 		return false
 	}
 
-	_, err = tx.ExecContext(ctx, "CREATE DATABASE IF NOT EXISTS "+nsName)
+	// Dropping database and user if exists
+	tx.ExecContext(ctx, fmt.Sprintf("DROP DATABASE `%s`", nsName))
+	tx.ExecContext(ctx, fmt.Sprintf("DROP USER `%s`", nsName))
+
+	_, err = tx.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE `%s`", nsName))
 	if err != nil {
 		log.Error(err, "Unable to create database: "+nsName)
 		tx.Rollback()
+		return false
 	}
 
 	_, err = tx.ExecContext(ctx, fmt.Sprintf("CREATE USER `%s`@`%%` IDENTIFIED BY '%s'", nsName, password))
@@ -173,7 +205,7 @@ func createDatabase(ctx context.Context, db *sql.DB, nsName string, password str
 		return false
 	}
 
-	_, err = tx.ExecContext(ctx, fmt.Sprintf("GRANT ALL PRIVILEGES ON %[1]s.* TO '%[1]s'@'%%'", nsName))
+	_, err = tx.ExecContext(ctx, fmt.Sprintf("GRANT ALL PRIVILEGES ON `%[1]s`.* TO `%[1]s`@`%%`", nsName))
 	if err != nil {
 		log.Error(err, "Unable to grant privileges for user to database: "+nsName)
 		tx.Rollback()
@@ -189,7 +221,7 @@ func createDatabase(ctx context.Context, db *sql.DB, nsName string, password str
 
 	err = tx.Commit()
 	if err != nil {
-		log.Error(err, "Unable to commit transaction")
+		log.Error(err, "Unable to commit db transaction")
 		return false
 	} else {
 		log.Info("Schema & user configured for namespace: " + nsName)
