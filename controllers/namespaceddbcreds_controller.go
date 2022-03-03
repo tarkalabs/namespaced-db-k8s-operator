@@ -311,7 +311,7 @@ func createDatabase(ctx context.Context, db *sql.DB, nsName string, password str
 }
 
 func getDataSourceName(instance *dbv1alpha1.NamespacedDBCreds) string {
-	return fmt.Sprintf("%s:%s@tcp(%s:%v)/?multiStatements=true", instance.Spec.DBAdminUserName, instance.Spec.DBAdminPassword, instance.Spec.DBHost, instance.Spec.DBPort)
+	return fmt.Sprintf("%s:%s@tcp(%s:%v)/", instance.Spec.DBAdminUserName, instance.Spec.DBAdminPassword, instance.Spec.DBHost, instance.Spec.DBPort)
 }
 
 func generateNewPassword(size int) string {
