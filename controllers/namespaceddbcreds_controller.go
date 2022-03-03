@@ -175,7 +175,7 @@ func checkAndUpdateSecrets(r NamespacedDBCredsReconciler, ctx context.Context, i
 
 			if err != nil && errors.IsNotFound(err) {
 				dbPassword := generateNewPassword(16)
-				if !createDatabase(ctx, db, namespace.Name, dbPassword) {
+				if !createDatabase(ctx, db, namespace.Name, dbPassword, true) {
 					return ctrl.Result{}, err
 				}
 
@@ -197,7 +197,7 @@ func checkAndUpdateSecrets(r NamespacedDBCredsReconciler, ctx context.Context, i
 				if (instance.Spec.DBHost != string(existingSecret.Data["host"])) || (instance.Spec.DBPort != dbPort) {
 					secret := getSecret(instance, &namespace, existingSecret, "")
 
-					if !createDatabase(ctx, db, namespace.Name, generateNewPassword(16)) {
+					if !createDatabase(ctx, db, namespace.Name, generateNewPassword(16), true) {
 						log.Error(err, "Unable to create database for Namespace: "+namespace.Name)
 						return ctrl.Result{}, err
 					}
@@ -212,7 +212,7 @@ func checkAndUpdateSecrets(r NamespacedDBCredsReconciler, ctx context.Context, i
 				} else {
 					if !checkDatabaseAndUser(db, namespace.Name) {
 						log.Error(nil, "Database or User got deleted for Namespace: "+namespace.Name)
-						if !createDatabase(ctx, db, namespace.Name, string(existingSecret.Data["password"])) {
+						if !createDatabase(ctx, db, namespace.Name, string(existingSecret.Data["password"]), false) {
 							log.Error(err, "Unable to create database for Namespace: "+namespace.Name)
 							return ctrl.Result{}, err
 						} else {
@@ -256,7 +256,7 @@ func checkDatabaseAndUser(db *sql.DB, namespace string) bool {
 	return err == nil
 }
 
-func createDatabase(ctx context.Context, db *sql.DB, nsName string, password string) bool {
+func createDatabase(ctx context.Context, db *sql.DB, nsName string, password string, dropDatabase bool) bool {
 	log := log.FromContext(ctx)
 	dbTxnCtx, cancelfunc := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancelfunc()
@@ -267,11 +267,13 @@ func createDatabase(ctx context.Context, db *sql.DB, nsName string, password str
 		return false
 	}
 
-	// Dropping database and user if exists
-	tx.ExecContext(dbTxnCtx, fmt.Sprintf("DROP DATABASE `%s`", nsName))
+	if dropDatabase {
+		log.Info("Dropping database: " + nsName)
+		tx.ExecContext(dbTxnCtx, fmt.Sprintf("DROP DATABASE `%s`", nsName))
+	}
 	tx.ExecContext(dbTxnCtx, fmt.Sprintf("DROP USER `%s`", nsName))
 
-	_, err = tx.ExecContext(dbTxnCtx, fmt.Sprintf("CREATE DATABASE `%s`", nsName))
+	_, err = tx.ExecContext(dbTxnCtx, fmt.Sprintf("CREATE DATABASE IF NOT EXISTS `%s`", nsName))
 	if err != nil {
 		log.Error(err, "Unable to create database: "+nsName)
 		tx.Rollback()
