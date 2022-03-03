@@ -66,7 +66,8 @@ func (r *NamespacedDBCredsReconciler) Reconcile(ctx context.Context, req ctrl.Re
 
 	// Fetch the NamespacedDBCreds instance
 	instance := &dbv1alpha1.NamespacedDBCreds{}
-	if err := r.Get(ctx, req.NamespacedName, instance); err != nil {
+	err := r.Get(ctx, req.NamespacedName, instance)
+	if err != nil {
 		if errors.IsNotFound(err) {
 			log.Info("NamespacedDBCreds object not found. Ignoring since object must be deleted.")
 			return ctrl.Result{}, nil
@@ -81,13 +82,43 @@ func (r *NamespacedDBCredsReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, err
 	}
 
-	if _, err := checkAndUpdateSecrets(*r, ctx, instance, log); err != nil {
-		log.Error(err, "Unable to update secrets in all namespaces")
-		return ctrl.Result{RequeueAfter: time.Minute}, err
+	// Only works on active objects
+	if instance.GetDeletionTimestamp() == nil {
+		if _, err := checkAndUpdateSecrets(*r, ctx, instance, log); err != nil {
+			log.Error(err, "Unable to update secrets in all namespaces")
+			return ctrl.Result{RequeueAfter: time.Minute}, err
+		}
 	}
 
 	log.Info(fmt.Sprintf("Reconciling ended at %s", time.Now().Format("2006-01-02 15:04:05")))
 	return ctrl.Result{RequeueAfter: time.Minute}, nil
+}
+
+func checkAndUpdateFinalizers(r NamespacedDBCredsReconciler, ctx context.Context, instance *dbv1alpha1.NamespacedDBCreds, log logr.Logger) (ctrl.Result, error) {
+	if controllerutil.ContainsFinalizer(instance, crdFinalizer) {
+		// Check if the instance is marked to be deleted, which is
+		// indicated by the deletion timestamp being set.
+		if instance.GetDeletionTimestamp() != nil {
+			// Run finalizer logic for this CRD
+			if err := r.finalizeNamespacedDbCredDelete(instance, log); err != nil {
+				return ctrl.Result{}, err
+			}
+			// Remove finalizer if work is done
+			controllerutil.RemoveFinalizer(instance, crdFinalizer)
+			err := r.Update(ctx, instance)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+	} else if instance.GetDeletionTimestamp() == nil {
+		// Add finalizer if it doesn't exist and the object is not being deleted
+		controllerutil.AddFinalizer(instance, crdFinalizer)
+		err := r.Update(ctx, instance)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+	return ctrl.Result{}, nil
 }
 
 func (r *NamespacedDBCredsReconciler) finalizeNamespacedDbCredDelete(instance *dbv1alpha1.NamespacedDBCreds, log logr.Logger) error {
@@ -119,36 +150,6 @@ func (r *NamespacedDBCredsReconciler) finalizeNamespacedDbCredDelete(instance *d
 	}
 	log.Info("Deleted all secrets across all namespaces")
 	return nil
-}
-
-func checkAndUpdateFinalizers(r NamespacedDBCredsReconciler, ctx context.Context, instance *dbv1alpha1.NamespacedDBCreds, log logr.Logger) (ctrl.Result, error) {
-	// Check if the instance is marked to be deleted, which is
-	// indicated by the deletion timestamp being set.
-	if instance.GetDeletionTimestamp() != nil {
-		// Check and run if any finalizers are present on the object
-		if controllerutil.ContainsFinalizer(instance, crdFinalizer) {
-			// Run finalizer logic for this CRD
-			if err := r.finalizeNamespacedDbCredDelete(instance, log); err != nil {
-				return ctrl.Result{}, err
-			}
-			// Remove finalizer if work is done
-			controllerutil.RemoveFinalizer(instance, crdFinalizer)
-			err := r.Update(ctx, instance)
-			if err != nil {
-				return ctrl.Result{}, err
-			}
-		}
-	} else {
-		// Add finalizer for this CR if not exists
-		if !controllerutil.ContainsFinalizer(instance, crdFinalizer) {
-			controllerutil.AddFinalizer(instance, crdFinalizer)
-			err := r.Update(ctx, instance)
-			if err != nil {
-				return ctrl.Result{}, err
-			}
-		}
-	}
-	return ctrl.Result{}, nil
 }
 
 func checkAndUpdateSecrets(r NamespacedDBCredsReconciler, ctx context.Context, instance *dbv1alpha1.NamespacedDBCreds, log logr.Logger) (ctrl.Result, error) {
