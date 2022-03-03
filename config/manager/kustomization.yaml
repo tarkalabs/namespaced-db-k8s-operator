@@ -13,4 +13,4 @@ kind: Kustomization
 images:
 - name: controller
   newName: namespaced-db-k8s-operator
-  newTag: "1646302326"
+  newTag: "1646304324"
