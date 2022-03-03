@@ -64,7 +64,7 @@ type NamespacedDBCredsReconciler struct {
 func (r *NamespacedDBCredsReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := log.FromContext(ctx)
 
-	log.Info(fmt.Sprintf("Reconciling now at %s", time.Now().Format("2006-01-02 15:04:05")))
+	log.Info(fmt.Sprintf("Reconciling started at %s", time.Now().Format("2006-01-02 15:04:05")))
 
 	// Fetch the NamespacedDBCreds instance
 	instance := &dbv1alpha1.NamespacedDBCreds{}
@@ -113,8 +113,8 @@ func (r *NamespacedDBCredsReconciler) Reconcile(ctx context.Context, req ctrl.Re
 				log.Error(err, "Unable to fetch Namespace secret: "+namespace.Name)
 				return ctrl.Result{RequeueAfter: time.Minute}, err
 			} else {
-				dbPort, _ := strconv.Atoi(string(existingSecret.Data["dbPort"]))
-				if (instance.Spec.DBHost != string(existingSecret.Data["dbHost"])) || (instance.Spec.DBPort != dbPort) {
+				dbPort, _ := strconv.Atoi(string(existingSecret.Data["port"]))
+				if (instance.Spec.DBHost != string(existingSecret.Data["host"])) || (instance.Spec.DBPort != dbPort) {
 					secret := getSecret(instance, &namespace, existingSecret, "")
 
 					if !createDatabase(db, namespace.Name, generateNewPassword(16)) {
@@ -131,7 +131,7 @@ func (r *NamespacedDBCredsReconciler) Reconcile(ctx context.Context, req ctrl.Re
 					}
 				} else {
 					if !checkDatabaseAndUser(db, namespace.Name) {
-						log.Error(err, "Database or User got deleted for Namespace: "+namespace.Name)
+						log.Error(nil, "Database or User got deleted for Namespace: "+namespace.Name)
 						if !createDatabase(db, namespace.Name, string(existingSecret.Data["password"])) {
 							log.Error(err, "Unable to create database for Namespace: "+namespace.Name)
 							return ctrl.Result{RequeueAfter: time.Minute}, err
@@ -144,6 +144,7 @@ func (r *NamespacedDBCredsReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		}
 	}
 
+	log.Info(fmt.Sprintf("Reconciling ended at %s", time.Now().Format("2006-01-02 15:04:05")))
 	return ctrl.Result{RequeueAfter: time.Minute}, nil
 }
 
