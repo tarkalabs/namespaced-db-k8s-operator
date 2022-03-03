@@ -24,12 +24,14 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/go-logr/logr"
 	_ "github.com/go-sql-driver/mysql"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	corev1 "k8s.io/api/core/v1"
@@ -38,7 +40,11 @@ import (
 	dbv1alpha1 "github.com/tarkalabs/namespaced-db-k8s-operator/api/v1alpha1"
 )
 
-const PASSWORD_CHARS = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+const passwordChars = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+const nsDbCredsOwnerLabelName = "namespaceddbcreds-owner-name"
+
+const crdFinalizer = "db.tarkalabs.com/finalizer"
 
 // NamespacedDBCredsReconciler reconciles a NamespacedDBCreds object
 type NamespacedDBCredsReconciler struct {
@@ -71,8 +77,42 @@ func (r *NamespacedDBCredsReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	err := r.Get(ctx, req.NamespacedName, instance)
 
 	if err != nil {
+		if errors.IsNotFound(err) {
+			// Request object not found, could have been deleted after reconcile request.
+			log.Info("NamespacedDBCreds object not found. Ignoring since object must be deleted.")
+			return ctrl.Result{}, nil
+		}
+		// Error reading the object - requeue the request.
 		log.Error(err, "Unable to fetch NamespacedDBCreds "+instance.Name)
 		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	// Check if the instance is marked to be deleted, which is
+	// indicated by the deletion timestamp being set.
+	if instance.GetDeletionTimestamp() != nil {
+		// Check and run if any finalizers are present on the object
+		if controllerutil.ContainsFinalizer(instance, crdFinalizer) {
+			// Run finalizer logic for this CRD
+			if err := r.finalizeNamespacedDbCredDelete(instance, log); err != nil {
+				return ctrl.Result{}, err
+			}
+			// Remove finalizer if work is done
+			controllerutil.RemoveFinalizer(instance, crdFinalizer)
+			err := r.Update(ctx, instance)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+		return ctrl.Result{}, nil
+	}
+
+	// Add finalizer for this CR if not exists
+	if !controllerutil.ContainsFinalizer(instance, crdFinalizer) {
+		controllerutil.AddFinalizer(instance, crdFinalizer)
+		err = r.Update(ctx, instance)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	db, err := sql.Open("mysql", getDataSourceName(instance))
@@ -107,6 +147,8 @@ func (r *NamespacedDBCredsReconciler) Reconcile(ctx context.Context, req ctrl.Re
 					log.Error(err, "Unable to create Secret in Namespace: "+namespace.Name)
 					return ctrl.Result{RequeueAfter: time.Minute}, err
 				} else {
+					// Should set controller & owner references but our usecase is to create secret in all namespaces
+					// If we set references, we will get an error saying `cross-namespace references are disallowed`.
 					log.Info("Secret created in Namespace: " + namespace.Name)
 				}
 			} else if err != nil {
@@ -148,10 +190,42 @@ func (r *NamespacedDBCredsReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	return ctrl.Result{RequeueAfter: time.Minute}, nil
 }
 
+func (r *NamespacedDBCredsReconciler) finalizeNamespacedDbCredDelete(instance *dbv1alpha1.NamespacedDBCreds, log logr.Logger) error {
+	log.Info("Deleting all the secrets across all namespaces")
+	namespaces := &corev1.NamespaceList{}
+	err := r.List(context.TODO(), namespaces)
+	if err != nil {
+		log.Error(err, "Unable to fetch Namespaces")
+		return err
+	} else {
+		for _, namespace := range namespaces.Items {
+			existingSecret := &corev1.Secret{}
+			err = r.Get(context.TODO(), client.ObjectKey{Name: instance.Name, Namespace: namespace.Name}, existingSecret)
+			if err != nil && errors.IsNotFound(err) {
+				continue
+			} else if err != nil {
+				log.Error(err, "Unable to fetch Namespace secret: "+namespace.Name)
+				return err
+			} else {
+				err = r.Delete(context.TODO(), existingSecret)
+				if err != nil {
+					log.Error(err, "Unable to delete Secret in Namespace: "+namespace.Name)
+					return err
+				} else {
+					log.Info("Secret deleted in Namespace: " + namespace.Name)
+				}
+			}
+		}
+	}
+	log.Info("Deleted all secrets across all namespaces")
+	return nil
+}
+
 func getSecret(instance *dbv1alpha1.NamespacedDBCreds, namespace *corev1.Namespace, existingSecret *corev1.Secret, passsword string) corev1.Secret {
 	metadata := metav1.ObjectMeta{
 		Name:      instance.Name,
 		Namespace: namespace.Name,
+		Labels:    map[string]string{nsDbCredsOwnerLabelName: instance.Name},
 	}
 	if existingSecret != nil && passsword == "" {
 		metadata = existingSecret.ObjectMeta
@@ -237,7 +311,7 @@ func getDataSourceName(instance *dbv1alpha1.NamespacedDBCreds) string {
 func generateNewPassword(size int) string {
 	buf := make([]byte, size)
 	for i := 0; i < size; i++ {
-		buf[i] = PASSWORD_CHARS[rand.Intn(len(PASSWORD_CHARS))]
+		buf[i] = passwordChars[rand.Intn(len(passwordChars))]
 	}
 	return string(buf)
 }

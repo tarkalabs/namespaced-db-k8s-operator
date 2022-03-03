@@ -3,6 +3,7 @@ module github.com/tarkalabs/namespaced-db-k8s-operator
 go 1.16
 
 require (
+	github.com/go-logr/logr v0.4.0
 	github.com/go-sql-driver/mysql v1.6.0
 	github.com/onsi/ginkgo v1.16.4
 	github.com/onsi/gomega v1.13.0
