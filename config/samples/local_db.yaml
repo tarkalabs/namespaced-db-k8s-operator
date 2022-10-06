@@ -3,7 +3,7 @@ kind: NamespacedDBCreds
 metadata:
   name: local-db
 spec:
-  dbHost: 192.168.0.133
+  dbHost: 192.168.59.106
   dbPort: 3306
   dbAdminUserName: root
   dbAdminPassword: password

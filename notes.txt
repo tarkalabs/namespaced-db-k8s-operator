@@ -10,10 +10,10 @@ operator-sdk create api --group=db --version=v1alpha1 --kind=NamespacedDBCreds -
 make install
 
 # build the operator
-make docker-build IMG=namespaced-db-k8s-operator:v5
+make docker-build IMG=namespaced-db-k8s-operator:v1
 
 # deploy the operator
-make deploy IMG=namespaced-db-k8s-operator:v5
+make deploy IMG=namespaced-db-k8s-operator:v1
 
 # Build and deploy the operator
 make docker-build deploy IMG=namespaced-db-k8s-operator:$(date +"%s")
@@ -21,4 +21,13 @@ make docker-build deploy IMG=namespaced-db-k8s-operator:$(date +"%s")
 # To get crd installed on cluster
 kubectl get namespaceddbcreds -o yaml
 
-kubectl get secrets -o yaml
+# Create mysql db containers using the docker-compose.yml file
+docker-compose up -d
+
+# To apply our namespaceddbcreds
+# Before applying make sure mysql ip has been updated in sample configs with your machine ip / minikube ip where mysql containers are running.
+kubectl apply -k config/samples
+
+# Get secrets created in our namespaces
+# local-db & local-db2 should come up for all namespaces
+kubectl get secrets -A
