@@ -1,0 +1,11 @@
+apiVersion: db.tarkalabs.com/v1alpha1
+kind: DatabaseInstance
+metadata:
+  name: databaseinstance-sample
+  namespace: namespaced-db-operator-system
+spec:
+  # TODO(user): Add fields here
+  name: postgres
+  host: db.namespaced-db-operator-system.svc.cluster.local
+  port: "5432"
+  authSecret: db-secret

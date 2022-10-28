@@ -1,0 +1,19 @@
+domain: tarkalabs.com
+layout:
+- go.kubebuilder.io/v4-alpha
+plugins:
+  manifests.sdk.operatorframework.io/v2: {}
+  scorecard.sdk.operatorframework.io/v2: {}
+projectName: namespaced-db-operator
+repo: github.com/tarkalabs/namespaced-db-operator
+resources:
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: tarkalabs.com
+  group: db
+  kind: DatabaseInstance
+  path: github.com/tarkalabs/namespaced-db-operator/api/v1alpha1
+  version: v1alpha1
+version: "3"

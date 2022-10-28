@@ -1,0 +1,40 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  creationTimestamp: null
+  name: manager-role
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
+  - list
+- apiGroups:
+  - db.tarkalabs.com
+  resources:
+  - databaseinstances
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - db.tarkalabs.com
+  resources:
+  - databaseinstances/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - db.tarkalabs.com
+  resources:
+  - databaseinstances/status
+  verbs:
+  - get
+  - patch
+  - update

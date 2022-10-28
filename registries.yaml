@@ -1,0 +1,4 @@
+mirrors:
+  "tarkalabs.com.registry:5000":
+    endpoint:
+      - http://tarkalabs.com.registry:5000
