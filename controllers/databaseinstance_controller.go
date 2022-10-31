@@ -18,8 +18,9 @@ package controllers
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -27,8 +28,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	dbv1alpha1 "github.com/tarkalabs/namespaced-db-operator/api/v1alpha1"
-
-	_ "github.com/lib/pq"
 )
 
 // DatabaseInstanceReconciler reconciles a DatabaseInstance object
@@ -36,6 +35,8 @@ type DatabaseInstanceReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 }
+
+var db *gorm.DB
 
 //+kubebuilder:rbac:groups=db.tarkalabs.com,resources=databaseinstances,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=db.tarkalabs.com,resources=databaseinstances/status,verbs=get;update;patch
@@ -67,18 +68,14 @@ func (r *DatabaseInstanceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	psqlInfo := fmt.Sprintf("host=%s port=%s user=%s "+"password=%s dbname=%s sslmode=disable",
+	dsn := fmt.Sprintf("host=%s port=%s user=%s "+"password=%s dbname=%s sslmode=disable",
 		databaseInstance.Spec.Host, databaseInstance.Spec.Port, string(secret.Data["username"]),
 		string(secret.Data["password"]), databaseInstance.Spec.Name)
-	db, err := sql.Open("postgres", psqlInfo)
+
+	var err error
+	db, err = gorm.Open(postgres.Open(dsn), &gorm.Config{})
 	if err != nil {
 		log.Error(err, fmt.Sprintf("sql.Open call failed for: %s", databaseInstance.Name))
-		return ctrl.Result{}, err
-	}
-	defer db.Close()
-
-	if err := db.Ping(); err != nil {
-		log.Error(err, fmt.Sprintf("Ping failed for: %s", databaseInstance.Name))
 		return ctrl.Result{}, err
 	}
 
