@@ -2,4 +2,5 @@
 resources:
 - db_v1alpha1_databaseinstance.yaml
 - db.yaml
+- db_v1alpha1_database.yaml
 #+kubebuilder:scaffold:manifestskustomizesamples

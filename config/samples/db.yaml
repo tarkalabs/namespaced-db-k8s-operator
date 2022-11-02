@@ -48,3 +48,13 @@ type: Opaque
 data:
   username: YWRtaW4=
   password: cGFzc3dvcmQ=
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: sampledb-secret
+  namespace: namespaced-db-operator-system
+type: Opaque
+data:
+  username: c2FtcGxldXNlcg==
+  password: c2FtcGxlcGFzc3dvcmQ=

@@ -12,6 +12,8 @@ rules:
   verbs:
   - get
   - list
+  - patch
+  - update
 - apiGroups:
   - db.tarkalabs.com
   resources:
@@ -34,6 +36,32 @@ rules:
   - db.tarkalabs.com
   resources:
   - databaseinstances/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - db.tarkalabs.com
+  resources:
+  - databases
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - db.tarkalabs.com
+  resources:
+  - databases/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - db.tarkalabs.com
+  resources:
+  - databases/status
   verbs:
   - get
   - patch

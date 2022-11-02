@@ -16,4 +16,13 @@ resources:
   kind: DatabaseInstance
   path: github.com/tarkalabs/namespaced-db-operator/api/v1alpha1
   version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: tarkalabs.com
+  group: db
+  kind: Database
+  path: github.com/tarkalabs/namespaced-db-operator/api/v1alpha1
+  version: v1alpha1
 version: "3"

@@ -1,0 +1,10 @@
+apiVersion: db.tarkalabs.com/v1alpha1
+kind: Database
+metadata:
+  name: database-sample
+  namespace: namespaced-db-operator-system
+spec:
+  # TODO(user): Add fields here
+  name: sampledb
+  instanceName: databaseinstance-sample
+  secret: sampledb-secret

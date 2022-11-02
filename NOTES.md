@@ -2,6 +2,7 @@
 ```shell
 operator-sdk init --plugins=go/v4-alpha --domain=tarkalabs.com --repo=github.com/tarkalabs/namespaced-db-operator
 operator-sdk create api --group=db --version=v1alpha1 --kind=DatabaseInstance --resource=true --controller=true
+operator-sdk create api --group=db --version=v1alpha1 --kind=Database --resource=true --controller=true
 ```
 
 ### Development setup

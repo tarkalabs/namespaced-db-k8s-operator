@@ -18,9 +18,8 @@ package controllers
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
-	"gorm.io/driver/postgres"
-	"gorm.io/gorm"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -28,6 +27,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	dbv1alpha1 "github.com/tarkalabs/namespaced-db-operator/api/v1alpha1"
+
+	_ "github.com/lib/pq"
 )
 
 // DatabaseInstanceReconciler reconciles a DatabaseInstance object
@@ -35,8 +36,6 @@ type DatabaseInstanceReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 }
-
-var db *gorm.DB
 
 //+kubebuilder:rbac:groups=db.tarkalabs.com,resources=databaseinstances,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=db.tarkalabs.com,resources=databaseinstances/status,verbs=get;update;patch
@@ -54,28 +53,34 @@ var db *gorm.DB
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.12.2/pkg/reconcile
 func (r *DatabaseInstanceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := log.FromContext(ctx)
+	var err error
 
 	// TODO(user): your logic here
 	var databaseInstance dbv1alpha1.DatabaseInstance
-	if err := r.Get(ctx, req.NamespacedName, &databaseInstance); err != nil {
+	if err = r.Get(ctx, req.NamespacedName, &databaseInstance); err != nil {
 		log.Error(err, "Unable to fetch DatabaseInstance")
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
 	secret := v1.Secret{}
-	if err := r.Get(ctx, client.ObjectKey{Name: databaseInstance.Spec.AuthSecret, Namespace: req.Namespace}, &secret); err != nil {
-		log.Error(err, "Unable to fetch DatabaseInstance")
-		return ctrl.Result{}, client.IgnoreNotFound(err)
+	if err = r.Get(ctx, client.ObjectKey{Name: databaseInstance.Spec.AuthSecret, Namespace: req.Namespace}, &secret); err != nil {
+		log.Error(err, "Unable to fetch DatabaseInstance Secret")
+		return ctrl.Result{}, err
 	}
 
-	dsn := fmt.Sprintf("host=%s port=%s user=%s "+"password=%s dbname=%s sslmode=disable",
+	psqlInfo := fmt.Sprintf("host=%s port=%s user=%s "+"password=%s dbname=%s sslmode=disable",
 		databaseInstance.Spec.Host, databaseInstance.Spec.Port, string(secret.Data["username"]),
 		string(secret.Data["password"]), databaseInstance.Spec.Name)
-
-	var err error
-	db, err = gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	var db *sql.DB
+	db, err = sql.Open("postgres", psqlInfo)
 	if err != nil {
 		log.Error(err, fmt.Sprintf("sql.Open call failed for: %s", databaseInstance.Name))
+		return ctrl.Result{}, err
+	}
+	defer db.Close()
+
+	if err = db.Ping(); err != nil {
+		log.Error(err, fmt.Sprintf("Ping failed for: %s", databaseInstance.Name))
 		return ctrl.Result{}, err
 	}
 
