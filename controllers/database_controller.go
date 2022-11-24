@@ -20,16 +20,21 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"github.com/go-logr/logr"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"time"
 
 	dbv1alpha1 "github.com/tarkalabs/namespaced-db-operator/api/v1alpha1"
 
 	_ "github.com/lib/pq"
 )
+
+const databaseFinalizer = "db.tarkalabs.com/finalizer"
 
 // DatabaseReconciler reconciles a Database object
 type DatabaseReconciler struct {
@@ -55,8 +60,8 @@ type DatabaseReconciler struct {
 func (r *DatabaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := log.FromContext(ctx)
 	var err error
+	const requeueAfterDuration = "2s"
 
-	// TODO(user): your logic here
 	var database dbv1alpha1.Database
 	if err = r.Get(ctx, req.NamespacedName, &database); err != nil {
 		log.Error(err, "Unable to fetch Database")
@@ -81,55 +86,118 @@ func (r *DatabaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, err
 	}
 
-	psqlInfo := fmt.Sprintf("host=%s port=%s user=%s "+"password=%s dbname=%s sslmode=disable",
-		databaseInstance.Spec.Host, databaseInstance.Spec.Port, string(databaseInstanceSecret.Data["username"]),
-		string(databaseInstanceSecret.Data["password"]), databaseInstance.Spec.Name)
+	psqlInfo := func(dbname string) string {
+		return fmt.Sprintf("host=%s port=%s user=%s "+"password=%s dbname=%s sslmode=disable",
+			databaseInstance.Spec.Host, databaseInstance.Spec.Port, string(databaseInstanceSecret.Data["username"]),
+			string(databaseInstanceSecret.Data["password"]), dbname)
+	}
 	var db *sql.DB
-	db, err = sql.Open("postgres", psqlInfo)
+	db, err = sql.Open("postgres", psqlInfo(databaseInstance.Spec.Name))
 	if err != nil {
-		log.Error(err, fmt.Sprintf("sql.Open call failed for: %s", databaseInstance.Name))
+		log.Error(err, fmt.Sprintf("sql.Open call failed for: %s", databaseInstance.Spec.Name))
 		return ctrl.Result{}, err
 	}
-	defer db.Close()
 
 	var dbPresent bool
 	if err = db.QueryRow("SELECT FROM pg_database WHERE datname = $1", database.Spec.Name).Scan(); err != sql.ErrNoRows {
 		dbPresent = true
+	}
+	if !dbPresent {
+		db.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", database.Spec.Name))
+		log.Info(fmt.Sprintf("Database %s has been successfully created", database.Spec.Name))
 	}
 
 	var userPresent bool
 	if err = db.QueryRow("SELECT FROM pg_roles WHERE rolname = $1", databaseSecret.Data["username"]).Scan(); err != sql.ErrNoRows {
 		userPresent = true
 	}
-
-	// Not able to create the Database inside a transaction
-	if !dbPresent {
-		db.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", database.Spec.Name))
-	}
-
-	var tx *sql.Tx
-	tx, err = db.BeginTx(ctx, nil)
-	if err != nil {
-		log.Error(err, fmt.Sprintf("Not able to begin db transaction for: %s", database.Spec.Name))
-		return ctrl.Result{}, err
-	}
-	defer tx.Rollback()
+	db.Close()
 
 	if !userPresent {
+		db, err = sql.Open("postgres", psqlInfo(database.Spec.Name))
+		if err != nil {
+			log.Error(err, fmt.Sprintf("sql.Open call failed for: %s", database.Spec.Name))
+			return ctrl.Result{}, err
+		}
+		defer db.Close()
+
+		var tx *sql.Tx
+		tx, err = db.BeginTx(ctx, nil)
+		if err != nil {
+			log.Error(err, fmt.Sprintf("Not able to begin db transaction for: %s", database.Spec.Name))
+			return ctrl.Result{}, err
+		}
+		defer tx.Rollback()
 		tx.ExecContext(ctx, fmt.Sprintf("CREATE USER %s WITH PASSWORD '%s'", databaseSecret.Data["username"], databaseSecret.Data["password"]))
+		tx.ExecContext(ctx, fmt.Sprintf("CREATE SCHEMA %s", databaseSecret.Data["username"]))
+		tx.ExecContext(ctx, fmt.Sprintf("REVOKE CONNECT ON DATABASE %s FROM public", database.Spec.Name))
+		tx.ExecContext(ctx, "REVOKE ALL ON SCHEMA public FROM public")
+		tx.ExecContext(ctx, "REVOKE ALL ON ALL TABLES IN SCHEMA public FROM public")
 		tx.ExecContext(ctx, fmt.Sprintf("GRANT CONNECT ON DATABASE %s TO %s", database.Spec.Name, databaseSecret.Data["username"]))
-		tx.ExecContext(ctx, fmt.Sprintf("GRANT pg_read_all_data TO %s", databaseSecret.Data["username"]))
-		tx.ExecContext(ctx, fmt.Sprintf("GRANT pg_write_all_data TO %s", databaseSecret.Data["username"]))
+		tx.ExecContext(ctx, fmt.Sprintf("GRANT ALL ON SCHEMA %s TO %s", databaseSecret.Data["username"], databaseSecret.Data["username"]))
+		tx.ExecContext(ctx, fmt.Sprintf("GRANT ALL ON ALL TABLES IN SCHEMA %s TO %s", databaseSecret.Data["username"], databaseSecret.Data["username"]))
+		tx.ExecContext(ctx, fmt.Sprintf("GRANT ALL ON ALL SEQUENCES IN SCHEMA %s TO %s", databaseSecret.Data["username"], databaseSecret.Data["username"]))
+		tx.ExecContext(ctx, fmt.Sprintf("GRANT ALL ON ALL FUNCTIONS IN SCHEMA %s TO %s", databaseSecret.Data["username"], databaseSecret.Data["username"]))
+		tx.ExecContext(ctx, fmt.Sprintf("ALTER DEFAULT PRIVILEGES FOR USER %s IN SCHEMA %s GRANT ALL ON TABLES TO %s", databaseSecret.Data["username"], databaseSecret.Data["username"], databaseSecret.Data["username"]))
+		tx.ExecContext(ctx, fmt.Sprintf("ALTER DEFAULT PRIVILEGES FOR USER %s IN SCHEMA %s GRANT ALL ON SEQUENCES TO %s", databaseSecret.Data["username"], databaseSecret.Data["username"], databaseSecret.Data["username"]))
+		tx.ExecContext(ctx, fmt.Sprintf("ALTER DEFAULT PRIVILEGES FOR USER %s IN SCHEMA %s GRANT ALL ON FUNCTIONS TO %s", databaseSecret.Data["username"], databaseSecret.Data["username"], databaseSecret.Data["username"]))
+
+		if err = tx.Commit(); err != nil {
+			log.Error(err, fmt.Sprintf("Not able to commit db transaction for: %s", database.Spec.Name))
+			return ctrl.Result{}, err
+		}
+		log.Info(fmt.Sprintf("User %s has been successfully created", databaseSecret.Data["username"]))
+		db.Close()
 	}
 
-	if err = tx.Commit(); err != nil {
-		log.Error(err, fmt.Sprintf("Not able to commit db transaction for: %s", database.Spec.Name))
-		return ctrl.Result{}, err
+	if isDatabaseMarkedToBeDeleted := database.GetDeletionTimestamp(); isDatabaseMarkedToBeDeleted != nil {
+		if controllerutil.ContainsFinalizer(&database, databaseFinalizer) {
+			if err := r.finalizeDatabase(log, db, database.Spec.Name, databaseInstance.Spec.Name, string(databaseSecret.Data["username"]), ctx, psqlInfo); err != nil {
+				return ctrl.Result{}, err
+			}
+			controllerutil.RemoveFinalizer(&database, databaseFinalizer)
+			err := r.Update(ctx, &database)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+		}
 	}
 
-	log.Info(fmt.Sprintf("Database %s has been successfully created", database.Spec.Name))
+	if !controllerutil.ContainsFinalizer(&database, databaseFinalizer) {
+		controllerutil.AddFinalizer(&database, databaseFinalizer)
+		err = r.Update(ctx, &database)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+	}
 
-	return ctrl.Result{}, nil
+	//https://github.com/kubernetes-sigs/controller-runtime/issues/617
+	duration, err := time.ParseDuration(requeueAfterDuration)
+	return ctrl.Result{RequeueAfter: duration}, nil
+}
+
+func (r *DatabaseReconciler) finalizeDatabase(reqLogger logr.Logger, db *sql.DB, database string, databaseInstance string, databaseUser string, ctx context.Context, psqlInfo func(dbname string) string) error {
+	var err error
+	db, err = sql.Open("postgres", psqlInfo(database))
+	if err != nil {
+		reqLogger.Error(err, fmt.Sprintf("sql.Open call failed for: %s", database))
+		return err
+	}
+	db.ExecContext(ctx, fmt.Sprintf("DROP OWNED BY %s", databaseUser))
+	db.ExecContext(ctx, fmt.Sprintf("DROP USER %s", databaseUser))
+	reqLogger.Info(fmt.Sprintf("Successfully dropped user: %s", databaseUser))
+	db.Close()
+	db, err = sql.Open("postgres", psqlInfo(databaseInstance))
+	if err != nil {
+		reqLogger.Error(err, fmt.Sprintf("sql.Open call failed for: %s", databaseInstance))
+		return err
+	}
+	db.ExecContext(ctx, fmt.Sprintf("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '%s'", database))
+	db.ExecContext(ctx, fmt.Sprintf("DROP DATABASE %s", database))
+	reqLogger.Info(fmt.Sprintf("Successfully dropped database: %s", database))
+	db.Close()
+	reqLogger.Info("Successfully finalized database")
+	return nil
 }
 
 // SetupWithManager sets up the controller with the Manager.

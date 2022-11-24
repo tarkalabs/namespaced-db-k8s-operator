@@ -55,7 +55,6 @@ func (r *DatabaseInstanceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	log := log.FromContext(ctx)
 	var err error
 
-	// TODO(user): your logic here
 	var databaseInstance dbv1alpha1.DatabaseInstance
 	if err = r.Get(ctx, req.NamespacedName, &databaseInstance); err != nil {
 		log.Error(err, "Unable to fetch DatabaseInstance")
